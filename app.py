@@ -7,7 +7,7 @@ import requests
 import numpy as np
 import plotly.graph_objects as go
 
-# --- [1] 화면 레이아웃 및 스타일 (사용자님 원본 스타일 100% 유지) ---
+# --- [1] 화면 레이아웃 및 스타일 (사용자님 원본 100% 유지) ---
 st.set_page_config(layout="wide", page_title="퀀트버전504")
 
 st.markdown("""
@@ -27,7 +27,7 @@ def to_num(val, default=0.0):
     try: return float(str(val).replace(',', ''))
     except: return default
 
-# --- [2] 상단 설정 UI (원본 항목 유지) ---
+# --- [2] 상단 설정 UI (원본 항목 및 배치 100% 동일) ---
 st.markdown('<div class="main-title">📊 퀀트버전504</div>', unsafe_allow_html=True)
 
 with st.container():
@@ -62,12 +62,12 @@ with row2_col2:
 
 run = st.button("🚀 백테스트 가동", type="primary", use_container_width=True)
 
-# --- [3] 백테스트 엔진 ---
+# --- [3] 백테스트 엔진 (에러 수정 및 QQQ 로직 강화) ---
 if run:
     with st.spinner('퀀트버전504 엔진 가동 중...'):
-        # 최신 yfinance 데이터 규격 대응 (에러 방지용 .values[0] 적용)
-        price_data = yf.download(ticker, start=start_d - datetime.timedelta(days=40), end=end_d)['Close'].dropna()
-        qqq_data = yf.download("QQQ", start=start_d, end=end_d)['Close'].dropna()
+        # 데이터 수집 (안전하게 인덱싱하기 위해 ['Close']를 확실히 추출)
+        price_data = yf.download(ticker, start=start_d - datetime.timedelta(days=40), end=end_d)['Close']
+        qqq_data = yf.download("QQQ", start=start_d, end=end_d)['Close']
         
         sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid=0"
         mode_df = pd.read_csv(io.StringIO(requests.get(sheet_url).text))
@@ -82,15 +82,17 @@ if run:
         try: start_idx = next(i for i, d in enumerate(trading_days) if d >= start_d)
         except: start_idx = 1
 
-        # [수정 포인트] 에러 발생 지점: .values.flatten()[0]으로 안전하게 추출
-        qqq_start_price = float(qqq_data.values.flatten()[0])
-        qqq_qty = capital / qqq_start_price
+        # [수정] QQQ 시작가 추출 (웹 에러 방지용)
+        q_start_val = float(qqq_data.values.flatten()[0])
+        qqq_qty = capital / q_start_val
 
         planned_amt = capital / split_n 
         days_elapsed, accumulated_profit_in_cycle = 0, 0 
 
         for i in range(start_idx, len(trading_days)):
-            curr_date, curr_close = trading_days[i], float(price_data.iloc[i].values.flatten()[0] if hasattr(price_data.iloc[i], 'values') else price_data.iloc[i])
+            curr_date = trading_days[i]
+            # [수정] 현재 종가 추출 (웹 에러 방지용)
+            curr_close = float(price_data.iloc[i].values.flatten()[0] if hasattr(price_data.iloc[i], 'values') else price_data.iloc[i])
             prev_close = float(price_data.iloc[i-1].values.flatten()[0] if hasattr(price_data.iloc[i-1], 'values') else price_data.iloc[i-1])
             change_rate = ((curr_close - prev_close) / prev_close) * 100
             
@@ -144,10 +146,13 @@ if run:
             asset_history.append(total_asset)
             date_history.append(curr_date)
             
+            # [핵심 수정] QQQ 날짜별 가치 계산 (일직선 방지)
             try:
-                # 최신 시계열 인덱싱 대응
-                curr_qqq_p = float(qqq_data.iloc[qqq_data.index.get_indexer([pd.Timestamp(curr_date)], method='pad')[0]])
-                qqq_hold_history.append(qqq_qty * curr_qqq_p)
+                target_ts = pd.Timestamp(curr_date)
+                # 현재 날짜와 가장 가까운 QQQ 종가를 찾아서 계산
+                curr_q_p = qqq_data.asof(target_ts)
+                curr_q_p_val = float(curr_q_p.values.flatten()[0] if hasattr(curr_q_p, 'values') else curr_q_p)
+                qqq_hold_history.append(qqq_qty * curr_q_p_val)
             except:
                 qqq_hold_history.append(qqq_hold_history[-1] if qqq_hold_history else capital)
 
