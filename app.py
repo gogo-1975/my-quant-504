@@ -7,7 +7,7 @@ import requests
 import numpy as np
 import plotly.graph_objects as go
 
-# --- [1] 화면 레이아웃 및 스타일 (사용자님 원본 100% 유지) ---
+# --- [1] 화면 레이아웃 및 스타일 (퀀트버전 유지) ---
 st.set_page_config(layout="wide", page_title="퀀트버전504")
 
 st.markdown("""
@@ -27,14 +27,28 @@ def to_num(val, default=0.0):
     try: return float(str(val).replace(',', ''))
     except: return default
 
-# --- [2] 상단 설정 UI (원본 항목 및 배치 100% 동일) ---
+# --- [2] 상단 설정 UI ---
 st.markdown('<div class="main-title">📊 퀀트버전504</div>', unsafe_allow_html=True)
 
 with st.container():
     c1, c2_start, c2_end, c3, c4, c5 = st.columns([0.6, 0.6, 0.6, 0.7, 0.5, 2.0])
-    with c1: ticker = st.selectbox("종목", ["SOXL", "TQQQ", "BULZ", "NVDA"])
-    with c2_start: start_d = st.date_input("시작일", datetime.date(2024, 1, 1))
-    with c2_end: end_d = st.date_input("종료일", datetime.date(2025, 12, 31))
+    with c1: 
+        ticker = st.selectbox("종목", ["SOXL", "TQQQ", "BULZ", "NVDA"])
+    
+    with c2_start: 
+        start_d = st.date_input(
+            "시작일", 
+            datetime.date(2024, 1, 1),
+            min_value=datetime.date(2000, 1, 1)
+        )
+    
+    with c2_end: 
+        end_d = st.date_input(
+            "종료일", 
+            datetime.date(2025, 12, 31),
+            min_value=datetime.date(2000, 1, 1)
+        )
+        
     with c3: capital = to_num(st.text_input("원금($)", "10000"))
     with c4: split_n = int(to_num(st.text_input("N분할", "7")))
     with c5: sheet_id = st.text_input("구글 시트 ID", "1_REHhaUAQA4X8rHBZmiCX5lAgsDjHyQqIFwIqPPOrCo")
@@ -43,8 +57,9 @@ row2_col1, row2_col2 = st.columns([1.5, 3.5])
 with row2_col1:
     st.markdown('<div class="config-box"><div class="box-title">📈 실현손익 복리 설정</div>', unsafe_allow_html=True)
     cp1, cp2, cp3, cp4 = st.columns(4)
-    with cp1: p_ratio = to_num(st.text_input("이익%", "80.0")) / 100
-    with cp2: l_ratio = to_num(st.text_input("손실%", "30.0")) / 100
+    # [수정] 소수점 없이 60, 20으로 표시
+    with cp1: p_ratio = to_num(st.text_input("이익%", "60")) / 100
+    with cp2: l_ratio = to_num(st.text_input("손실%", "20")) / 100
     with cp3: update_cycle = int(to_num(st.text_input("주기", "10")))
     with cp4: fee_rate = to_num(st.text_input("수수료%", "0.042")) / 100
     st.markdown('</div>', unsafe_allow_html=True)
@@ -52,7 +67,8 @@ with row2_col1:
 with row2_col2:
     st.markdown('<div class="config-box"><div class="box-title">⚔️ 모드별 매매 전략</div>', unsafe_allow_html=True)
     s1, s2, s3, a1, a2, a3 = st.columns([1, 1, 1, 1, 1, 1])
-    with s1: s_buy_target = to_num(st.text_input("안전매수%", "6.5", key="sb_t")) / 100
+    # [수정] 요청하신 안전매수% 1.7 유지
+    with s1: s_buy_target = to_num(st.text_input("안전매수%", "1.7", key="sb_t")) / 100
     with s2: s_sell_target = to_num(st.text_input("안전매도%", "0.4", key="ss_t")) / 100
     with s3: s_hold_days = int(to_num(st.text_input("안전보유", "30", key="sh_t")))
     with a1: a_buy_target = to_num(st.text_input("공세매수%", "3.95", key="ab_t")) / 100
@@ -62,12 +78,11 @@ with row2_col2:
 
 run = st.button("🚀 백테스트 가동", type="primary", use_container_width=True)
 
-# --- [3] 백테스트 엔진 (에러 수정 및 QQQ 로직 강화) ---
+# --- [3] 백테스트 엔진 ---
 if run:
     with st.spinner('퀀트버전504 엔진 가동 중...'):
-        # 데이터 수집 (안전하게 인덱싱하기 위해 ['Close']를 확실히 추출)
-        price_data = yf.download(ticker, start=start_d - datetime.timedelta(days=40), end=end_d)['Close']
-        qqq_data = yf.download("QQQ", start=start_d, end=end_d)['Close']
+        price_data = yf.download(ticker, start=start_d - datetime.timedelta(days=40), end=end_d)['Close'].dropna()
+        qqq_data = yf.download("QQQ", start=start_d, end=end_d)['Close'].dropna()
         
         sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid=0"
         mode_df = pd.read_csv(io.StringIO(requests.get(sheet_url).text))
@@ -82,18 +97,15 @@ if run:
         try: start_idx = next(i for i, d in enumerate(trading_days) if d >= start_d)
         except: start_idx = 1
 
-        # [수정] QQQ 시작가 추출 (웹 에러 방지용)
-        q_start_val = float(qqq_data.values.flatten()[0])
-        qqq_qty = capital / q_start_val
+        qqq_start_price = float(qqq_data.iloc[0])
+        qqq_qty = capital / qqq_start_price
 
         planned_amt = capital / split_n 
         days_elapsed, accumulated_profit_in_cycle = 0, 0 
 
         for i in range(start_idx, len(trading_days)):
-            curr_date = trading_days[i]
-            # [수정] 현재 종가 추출 (웹 에러 방지용)
-            curr_close = float(price_data.iloc[i].values.flatten()[0] if hasattr(price_data.iloc[i], 'values') else price_data.iloc[i])
-            prev_close = float(price_data.iloc[i-1].values.flatten()[0] if hasattr(price_data.iloc[i-1], 'values') else price_data.iloc[i-1])
+            curr_date, curr_close = trading_days[i], float(price_data.iloc[i])
+            prev_close = float(price_data.iloc[i-1])
             change_rate = ((curr_close - prev_close) / prev_close) * 100
             
             if days_elapsed > 0 and days_elapsed % update_cycle == 0:
@@ -146,13 +158,9 @@ if run:
             asset_history.append(total_asset)
             date_history.append(curr_date)
             
-            # [핵심 수정] QQQ 날짜별 가치 계산 (일직선 방지)
             try:
-                target_ts = pd.Timestamp(curr_date)
-                # 현재 날짜와 가장 가까운 QQQ 종가를 찾아서 계산
-                curr_q_p = qqq_data.asof(target_ts)
-                curr_q_p_val = float(curr_q_p.values.flatten()[0] if hasattr(curr_q_p, 'values') else curr_q_p)
-                qqq_hold_history.append(qqq_qty * curr_q_p_val)
+                curr_qqq_p = float(qqq_data.loc[pd.Timestamp(curr_date)])
+                qqq_hold_history.append(qqq_qty * curr_qqq_p)
             except:
                 qqq_hold_history.append(qqq_hold_history[-1] if qqq_hold_history else capital)
 
@@ -171,7 +179,7 @@ if run:
                 '수익률': f"{total_return:.2f}%"
             })
 
-        # --- [4] 지표 및 그래프 출력 (사용자님 원본 그대로) ---
+        # --- [4] 지표 출력 ---
         st.divider()
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("최종 총자산", f"${int(total_asset):,}")
@@ -184,9 +192,11 @@ if run:
         m4.metric("CAGR", f"{cagr:.2f}%")
         m5.metric("승률", f"{(sum(trade_results)/len(trade_results)*100 if trade_results else 0):.1f}%")
 
+        # --- [5] 자산총액 비교 그래프 ---
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=date_history, y=asset_history, mode='lines', name='전략 자산총액', line=dict(color='navy', width=1.5)))
         fig.add_trace(go.Scatter(x=date_history, y=qqq_hold_history, mode='lines', name='QQQ 단순보유', line=dict(color='pink', width=1.5)))
+        
         fig.update_layout(title="전략 자산총액 vs QQQ 단순보유 비교", xaxis_title="날짜", yaxis_title="가치 ($)", template="plotly_white", height=500, hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
 
