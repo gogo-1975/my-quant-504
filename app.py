@@ -57,6 +57,7 @@ row2_col1, row2_col2 = st.columns([1.5, 3.5])
 with row2_col1:
     st.markdown('<div class="config-box"><div class="box-title">📈 실현손익 복리 설정</div>', unsafe_allow_html=True)
     cp1, cp2, cp3, cp4 = st.columns(4)
+    # 요청하신 이익 60, 손실 20 설정
     with cp1: p_ratio = to_num(st.text_input("이익%", "60")) / 100
     with cp2: l_ratio = to_num(st.text_input("손실%", "20")) / 100
     with cp3: update_cycle = int(to_num(st.text_input("주기", "10")))
@@ -66,6 +67,7 @@ with row2_col1:
 with row2_col2:
     st.markdown('<div class="config-box"><div class="box-title">⚔️ 모드별 매매 전략</div>', unsafe_allow_html=True)
     s1, s2, s3, a1, a2, a3 = st.columns([1, 1, 1, 1, 1, 1])
+    # 요청하신 안전매수 1.7% 설정
     with s1: s_buy_target = to_num(st.text_input("안전매수%", "1.7", key="sb_t")) / 100
     with s2: s_sell_target = to_num(st.text_input("안전매도%", "0.4", key="ss_t")) / 100
     with s3: s_hold_days = int(to_num(st.text_input("안전보유", "30", key="sh_t")))
@@ -79,16 +81,15 @@ run = st.button("🚀 백테스트 가동", type="primary", use_container_width=
 # --- [3] 백테스트 엔진 ---
 if run:
     with st.spinner('퀀트버전505 엔진 가동 중...'):
-        # 주가 데이터 다운로드
+        # 주가 데이터 다운로드 (멀티 인덱스 방지를 위해 group_by 제거 및 명확한 추출)
         raw_price = yf.download(ticker, start=start_d - datetime.timedelta(days=40), end=end_d)['Close']
         raw_qqq = yf.download("QQQ", start=start_d, end=end_d)['Close']
         
         price_data = raw_price.dropna()
         qqq_data = raw_qqq.dropna()
         
-        # 데이터 유무 체크 (Series 에러 방지를 위해 데이터 타입을 확실히 함)
         if len(price_data) < 2 or len(qqq_data) < 1:
-            st.error(f"선택하신 기간({start_d} ~ {end_d})에 분석할 데이터가 부족합니다. 날짜를 다시 확인해 주세요.")
+            st.error(f"선택하신 기간({start_d} ~ {end_d})에 분석할 데이터가 부족합니다. 종목 상장일 이후인지 확인해 주세요.")
         else:
             try:
                 sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid=0"
@@ -107,16 +108,16 @@ if run:
                         start_idx = i
                         break
 
-                # [중요] Series 에러 방지를 위해 .values[0]으로 명확하게 숫자값만 추출
-                qqq_start_price = float(qqq_data.values[0])
+                # scalar 에러 방지를 위해 .iloc[0] 후 float() 강제 변환
+                qqq_start_price = float(qqq_data.iloc[0])
                 qqq_qty = capital / qqq_start_price
 
                 planned_amt = capital / split_n 
                 days_elapsed, accumulated_profit_in_cycle = 0, 0 
 
                 for i in range(start_idx, len(trading_days)):
-                    curr_date, curr_close = trading_days[i], float(price_data.values[i])
-                    prev_close = float(price_data.values[i-1])
+                    curr_date, curr_close = trading_days[i], float(price_data.iloc[i])
+                    prev_close = float(price_data.iloc[i-1])
                     change_rate = ((curr_close - prev_close) / prev_close) * 100
                     
                     if days_elapsed > 0 and days_elapsed % update_cycle == 0:
@@ -170,7 +171,13 @@ if run:
                     date_history.append(curr_date)
                     
                     try:
-                        curr_qqq_p = float(qqq_data.loc[pd.Timestamp(curr_date)].values[0])
+                        # 일자별 QQQ 가격 추출 시 에러 방지
+                        curr_qqq_val = qqq_data.loc[pd.Timestamp(curr_date)]
+                        # 만약 Series로 반환되면 첫 값만 추출
+                        if isinstance(curr_qqq_val, pd.Series):
+                            curr_qqq_p = float(curr_qqq_val.iloc[0])
+                        else:
+                            curr_qqq_p = float(curr_qqq_val)
                         qqq_hold_history.append(qqq_qty * curr_qqq_p)
                     except:
                         qqq_hold_history.append(qqq_hold_history[-1] if qqq_hold_history else capital)
@@ -214,4 +221,4 @@ if run:
                 st.divider()
                 st.dataframe(pd.DataFrame(logs), use_container_width=True)
             except Exception as e:
-                st.error(f"백테스트 도중 오류가 발생했습니다: {e}")
+                st.error(f"백테스트 엔진 오류: {e}")
