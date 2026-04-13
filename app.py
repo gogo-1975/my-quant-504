@@ -7,7 +7,7 @@ import requests
 import numpy as np
 import plotly.graph_objects as go
 
-# --- [1] 화면 레이아웃 및 스타일 (504 버전 유지) ---
+# --- [1] 화면 레이아웃 및 스타일 ---
 st.set_page_config(layout="wide", page_title="퀀트버전505")
 
 st.markdown("""
@@ -27,8 +27,12 @@ def to_num(val, default=0.0):
     try: return float(str(val).replace(',', ''))
     except: return default
 
-# --- [2] 상단 설정 UI ---
+# --- [2] 상단 설정 UI (날짜 범위 수정) ---
 st.markdown('<div class="main-title">📊 퀀트버전505</div>', unsafe_allow_html=True)
+
+# 날짜 선택 제한 상한/하한 정의
+MIN_DATE = datetime.date(2010, 3, 11)
+MAX_DATE = datetime.date(2035, 12, 31)
 
 with st.container():
     c1, c2_start, c2_end, c3, c4, c5 = st.columns([0.6, 0.6, 0.6, 0.7, 0.5, 2.0])
@@ -36,18 +40,21 @@ with st.container():
         ticker = st.selectbox("종목", ["SOXL", "TQQQ", "BULZ", "NVDA"])
     
     with c2_start: 
-        # 시작일 기본값을 2010-03-11로 설정하여 달력 이동 불편 해소
+        # 시작일: 2010~2035년까지 모두 열어둠
         start_d = st.date_input(
             "시작일", 
-            value=datetime.date(2010, 3, 11),
-            min_value=datetime.date(2010, 3, 11)
+            value=MIN_DATE,
+            min_value=MIN_DATE,
+            max_value=MAX_DATE
         )
     
     with c2_end: 
+        # 종료일: 2010~2035년까지 모두 열어둠
         end_d = st.date_input(
             "종료일", 
             value=datetime.date(2025, 12, 31),
-            min_value=datetime.date(2010, 3, 11)
+            min_value=MIN_DATE,
+            max_value=MAX_DATE
         )
         
     with c3: capital = to_num(st.text_input("원금($)", "10000"))
@@ -80,8 +87,8 @@ run = st.button("🚀 백테스트 가동", type="primary", use_container_width=
 # --- [3] 백테스트 엔진 ---
 if run:
     with st.spinner('퀀트버전505 엔진 가동 중...'):
-        # 데이터 수집 (안전하게 두 번 나눠서 가져오거나 멀티인덱스 처리)
         try:
+            # 주가 데이터 수집
             df_price = yf.download(ticker, start=start_d - datetime.timedelta(days=40), end=end_d)['Close']
             df_qqq = yf.download("QQQ", start=start_d, end=end_d)['Close']
             
@@ -105,7 +112,7 @@ if run:
             try: start_idx = next(i for i, d in enumerate(trading_days) if d >= start_d)
             except: start_idx = 1
 
-            # [방패] 덩어리 데이터(Series)일 경우 첫 값만 추출
+            # [방패] Series/Scalar 에러 방지
             q0 = qqq_data.iloc[0]
             qqq_start_price = float(q0.iloc[0] if hasattr(q0, "__len__") and not isinstance(q0, str) else q0)
             qqq_qty = capital / qqq_start_price
@@ -115,10 +122,7 @@ if run:
 
             for i in range(start_idx, len(trading_days)):
                 curr_date = trading_days[i]
-                
-                c_val = price_data.iloc[i]
-                p_val = price_data.iloc[i-1]
-                # [방패] 덩어리 데이터 처리
+                c_val, p_val = price_data.iloc[i], price_data.iloc[i-1]
                 curr_close = float(c_val.iloc[0] if hasattr(c_val, "__len__") and not isinstance(c_val, str) else c_val)
                 prev_close = float(p_val.iloc[0] if hasattr(p_val, "__len__") and not isinstance(p_val, str) else p_val)
                 
@@ -152,8 +156,7 @@ if run:
                                     log['실제매도일'], log['매도량'], log['실현수익'] = curr_date, slots[s]['qty'], round(pnl, 2)
                             slots[s] = None
 
-                target_p = prev_close * (1 + bp)
-                target_qty = int(effective_daily_amt // target_p)
+                target_p, target_qty = prev_close * (1 + bp), int(effective_daily_amt // (prev_close * (1 + bp)))
                 actual_buy_q, planned_sell_p, moc_date = 0, 0, None
                 
                 if curr_close <= target_p and target_qty > 0:
@@ -162,8 +165,7 @@ if run:
                             buy_val = curr_close * target_qty
                             buy_f = buy_val * fee_rate
                             if (buy_val + buy_f) <= cash:
-                                planned_sell_p = curr_close * (1 + sp)
-                                moc_date = trading_days[min(i + hd, len(trading_days)-1)]
+                                planned_sell_p, moc_date = curr_close * (1 + sp), trading_days[min(i + hd, len(trading_days)-1)]
                                 slots[s] = {'qty': target_qty, 'buy_price': curr_close, 'target_p': planned_sell_p, 'buy_date': curr_date, 'expire_d': moc_date}
                                 cash -= (buy_val + buy_f)
                                 actual_buy_q, daily_fees = target_qty, daily_fees + buy_f
@@ -181,8 +183,7 @@ if run:
                 except:
                     qqq_hold_history.append(qqq_hold_history[-1] if qqq_hold_history else capital)
 
-                total_return = (total_asset - capital) / capital * 100
-                days_elapsed += 1 
+                total_return, days_elapsed = (total_asset - capital) / capital * 100, days_elapsed + 1
 
                 logs.append({
                     '날짜': curr_date, '종가': round(curr_close, 2), '모드': mode, '변동률': f"{change_rate:+.2f}%",
@@ -196,7 +197,7 @@ if run:
                     '수익률': f"{total_return:.2f}%"
                 })
 
-            # --- 지표 및 그래프 ---
+            # --- 결과 출력 ---
             st.divider()
             m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("최종 총자산", f"${int(total_asset):,}")
@@ -205,8 +206,7 @@ if run:
             peak = np.maximum.accumulate(arr_asset)
             m3.metric("MDD", f"{(np.min((arr_asset - peak) / peak) * 100):.2f}%")
             years = (end_d - start_d).days / 365.25
-            cagr = ((total_asset / capital) ** (1 / years) - 1) * 100 if years > 0 else 0
-            m4.metric("CAGR", f"{cagr:.2f}%")
+            m4.metric("CAGR", f"{((total_asset / capital) ** (1 / years) - 1) * 100 if years > 0 else 0:.2f}%")
             m5.metric("승률", f"{(sum(trade_results)/len(trade_results)*100 if trade_results else 0):.1f}%")
 
             fig = go.Figure()
@@ -217,4 +217,4 @@ if run:
             st.divider()
             st.dataframe(pd.DataFrame(logs), use_container_width=True)
         except Exception as e:
-            st.error(f"백테스트 실행 중 오류 발생: {e}")
+            st.error(f"실행 오류: {e}")
