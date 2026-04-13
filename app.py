@@ -80,12 +80,15 @@ run = st.button("🚀 백테스트 가동", type="primary", use_container_width=
 if run:
     with st.spinner('퀀트버전505 엔진 가동 중...'):
         # 주가 데이터 다운로드
-        price_data = yf.download(ticker, start=start_d - datetime.timedelta(days=40), end=end_d)['Close'].dropna()
-        qqq_data = yf.download("QQQ", start=start_d, end=end_d)['Close'].dropna()
+        raw_price = yf.download(ticker, start=start_d - datetime.timedelta(days=40), end=end_d)['Close']
+        raw_qqq = yf.download("QQQ", start=start_d, end=end_d)['Close']
         
-        # 데이터 유무 체크 로직 강화
+        price_data = raw_price.dropna()
+        qqq_data = raw_qqq.dropna()
+        
+        # 데이터 유무 체크 (Series 에러 방지를 위해 데이터 타입을 확실히 함)
         if len(price_data) < 2 or len(qqq_data) < 1:
-            st.error(f"선택하신 기간({start_d} ~ {end_d})에 분석할 수 있는 주가 데이터가 충분하지 않습니다. 날짜를 다시 확인해 주세요.")
+            st.error(f"선택하신 기간({start_d} ~ {end_d})에 분석할 데이터가 부족합니다. 날짜를 다시 확인해 주세요.")
         else:
             try:
                 sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&gid=0"
@@ -98,23 +101,22 @@ if run:
                 qqq_hold_history = []
                 
                 trading_days = price_data.index.date.tolist()
-                # 시작 인덱스 찾기 안전장치
                 start_idx = 1
                 for i, d in enumerate(trading_days):
                     if d >= start_d:
                         start_idx = i
                         break
 
-                # QQQ 비교 데이터 시작점 설정
-                qqq_start_price = float(qqq_data.iloc[0])
+                # [중요] Series 에러 방지를 위해 .values[0]으로 명확하게 숫자값만 추출
+                qqq_start_price = float(qqq_data.values[0])
                 qqq_qty = capital / qqq_start_price
 
                 planned_amt = capital / split_n 
                 days_elapsed, accumulated_profit_in_cycle = 0, 0 
 
                 for i in range(start_idx, len(trading_days)):
-                    curr_date, curr_close = trading_days[i], float(price_data.iloc[i])
-                    prev_close = float(price_data.iloc[i-1])
+                    curr_date, curr_close = trading_days[i], float(price_data.values[i])
+                    prev_close = float(price_data.values[i-1])
                     change_rate = ((curr_close - prev_close) / prev_close) * 100
                     
                     if days_elapsed > 0 and days_elapsed % update_cycle == 0:
@@ -168,7 +170,7 @@ if run:
                     date_history.append(curr_date)
                     
                     try:
-                        curr_qqq_p = float(qqq_data.loc[pd.Timestamp(curr_date)])
+                        curr_qqq_p = float(qqq_data.loc[pd.Timestamp(curr_date)].values[0])
                         qqq_hold_history.append(qqq_qty * curr_qqq_p)
                     except:
                         qqq_hold_history.append(qqq_hold_history[-1] if qqq_hold_history else capital)
