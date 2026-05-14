@@ -7,8 +7,8 @@ import requests
 import numpy as np
 import plotly.graph_objects as go
 
-# --- [1] 화면 레이아웃 및 스타일 설정 (기존 유지) ---
-st.set_page_config(layout="wide", page_title="퀀트버전 506 (최종 수정본)")
+# --- [1] 화면 레이아웃 및 스타일 (기존 유지) ---
+st.set_page_config(layout="wide", page_title="퀀트버전 506 (강제청산 모델)")
 
 st.markdown("""
     <style>
@@ -27,19 +27,17 @@ def to_num(val, default=0.0):
     try: return float(str(val).replace(',', ''))
     except: return default
 
-# --- [2] 상단 설정 UI (시작일 제한 수정) ---
-st.markdown('<div class="main-title">📊 퀀트버전 506 (SOXL 상장일 대응)</div>', unsafe_allow_html=True)
+# --- [2] 상단 설정 UI (기존 유지) ---
+st.markdown('<div class="main-title">📊 퀀트버전 506 (액면분할 전날 강제청산 버전)</div>', unsafe_allow_html=True)
 
-# ⭐ SOXL 상장일인 2010-03-11로 고정
 SOXL_BIRTH = datetime.date(2010, 3, 11)
 MAX_DATE = datetime.date(2035, 12, 31)
 
 with st.container():
     c1, c2_start, c2_end, c3, c4, c5 = st.columns([0.6, 0.6, 0.6, 0.7, 0.5, 2.0])
     with c1: ticker = st.selectbox("종목", ["SOXL", "TQQQ", "BULZ", "NVDA"])
-    # 시작일 선택 범위를 상장일부터 가능하게 수정
-    with c2_start: start_d = st.date_input("시작일", value=datetime.date(2024, 9, 1), min_value=SOXL_BIRTH, max_value=MAX_DATE)
-    with c2_end: end_d = st.date_input("종료일", value=datetime.date(2025, 12, 31), min_value=SOXL_BIRTH, max_value=MAX_DATE)
+    with c2_start: start_d = st.date_input("시작일", value=datetime.date(2021, 2, 1), min_value=SOXL_BIRTH, max_value=MAX_DATE)
+    with c2_end: end_d = st.date_input("종료일", value=datetime.date(2021, 4, 30), min_value=SOXL_BIRTH, max_value=MAX_DATE)
     with c3: capital = to_num(st.text_input("원금($)", "10000"))
     with c4: split_n = int(to_num(st.text_input("N분할", "7")))
     with c5: sheet_id = st.text_input("구글 시트 ID", "1_REHhaUAQA4X8rHBZmiCX5lAgsDjHyQqIFwIqPPOrCo")
@@ -69,7 +67,7 @@ run = st.button("🚀 백테스트 시작", type="primary", use_container_width=
 
 # --- [3] 백테스트 엔진 ---
 if run:
-    with st.spinner('데이터 로드 중...'):
+    with st.spinner('데이터 분석 중...'):
         try:
             t_obj = yf.Ticker(ticker); q_obj = yf.Ticker("QQQ")
             df_price_full = t_obj.history(start=start_d - datetime.timedelta(days=45), end=end_d, auto_adjust=False)
@@ -100,51 +98,58 @@ if run:
                 curr_close = float(price_data.iloc[i])
                 prev_close = float(price_data.iloc[i-1])
                 
-                # 액면분할 보정
-                split_ratio = splits.iloc[i]
-                if split_ratio != 0:
-                    prev_close /= split_ratio
+                # --- [A] 액면분할 감지 및 강제 청산 (사용자 요청 핵심 로직) ---
+                # 내일 액면분할이 예정되어 있다면, 오늘 모든 슬롯을 시장가로 정리합니다.
+                is_split_tomorrow = False
+                if i + 1 < len(trading_days):
+                    if splits.iloc[i+1] != 0:
+                        is_split_tomorrow = True
+
+                daily_realized_profit, daily_fees = 0, 0
+
+                # 내일 분할이라면 오늘 다 판다!
+                if is_split_tomorrow:
                     for s in range(split_n):
                         if slots[s]:
-                            slots[s]['qty'] *= split_ratio
-                            slots[s]['buy_price'] /= split_ratio
-                            slots[s]['target_p'] /= split_ratio
-
-                # 금요일 선행 모드 결정
-                days_until_friday = 4 - curr_date.weekday()
-                target_friday = curr_date + datetime.timedelta(days=days_until_friday)
-                m_match = valid_mode_df[valid_mode_df['시트날짜'] == target_friday]
-                
-                if not m_match.empty:
-                    mode = str(m_match.iloc[0, 10]).strip()
-                else:
-                    mode = str(valid_mode_df.iloc[-1, 10]).strip() if not valid_mode_df.empty else "안전"
-                
-                bp, sp, hd = (a_buy_target, a_sell_target, a_hold_days) if mode == "공세" else (s_buy_target, s_sell_target, s_hold_days)
-                
-                if days_elapsed > 0 and days_elapsed % update_cycle == 0:
-                    planned_amt += (accumulated_profit_in_cycle * (p_ratio if accumulated_profit_in_cycle >= 0 else l_ratio)) / split_n
-                    accumulated_profit_in_cycle = 0
-                
-                daily_realized_profit, daily_fees = 0, 0
-                for s in range(split_n):
-                    if slots[s] and slots[s]['buy_date'] != curr_date:
-                        if curr_close >= slots[s]['target_p'] or curr_date >= slots[s]['expire_d']:
                             val_raw = curr_close * slots[s]['qty']; fee = val_raw * fee_rate
                             pnl = (val_raw - fee) - (slots[s]['buy_price'] * slots[s]['qty'])
                             cash += (val_raw - fee); daily_fees += fee; daily_realized_profit += pnl; accumulated_profit_in_cycle += pnl
                             trade_results.append(1 if pnl > 0 else 0)
                             for log in logs:
-                                if log['날짜'] == slots[s]['buy_date'] and log['매수량'] != "-":
-                                    log['실제매도일'], log['매도량'], log['실현수익'] = curr_date, slots[s]['qty'], round(pnl, 2)
+                                if log['날짜'] == slots[s]['buy_date']:
+                                    log['실제매도일'], log['매도량'], log['실현수익'] = f"{curr_date}(분할전청산)", round(float(slots[s]['qty']), 2), round(float(pnl), 2)
                             slots[s] = None
-
-                # ⭐ 매수 로직 (예산 반올림 / 수량 내림 적용)
-                target_p = prev_close * (1 + bp)
                 
-                # 수량 계산: 엑셀 INT와 동일하게 소수점 버림(int)
+                # --- [B] 일반 매도 로직 (액면분할 당일은 건너뜀) ---
+                split_ratio = splits.iloc[i]
+                if not is_split_tomorrow and split_ratio == 0:
+                    for s in range(split_n):
+                        if slots[s] and slots[s]['buy_date'] != curr_date:
+                            if curr_close >= slots[s]['target_p'] or curr_date >= slots[s]['expire_d']:
+                                val_raw = curr_close * slots[s]['qty']; fee = val_raw * fee_rate
+                                pnl = (val_raw - fee) - (slots[s]['buy_price'] * slots[s]['qty'])
+                                cash += (val_raw - fee); daily_fees += fee; daily_realized_profit += pnl; accumulated_profit_in_cycle += pnl
+                                trade_results.append(1 if pnl > 0 else 0)
+                                for log in logs:
+                                    if log['날짜'] == slots[s]['buy_date']:
+                                        log['실제매도일'], log['매도량'], log['실현수익'] = curr_date, round(float(slots[s]['qty']), 2), round(float(pnl), 2)
+                                slots[s] = None
+
+                # [C] 매수 로직 (분할 전날과 당일은 매수 금지)
+                days_until_friday = 4 - curr_date.weekday()
+                target_friday = curr_date + datetime.timedelta(days=days_until_friday)
+                m_match = valid_mode_df[valid_mode_df['시트날짜'] == target_friday]
+                mode = str(m_match.iloc[0, 10]).strip() if not m_match.empty else "안전"
+                bp, sp, hd = (a_buy_target, a_sell_target, a_hold_days) if mode == "공세" else (s_buy_target, s_sell_target, s_hold_days)
+                
+                if days_elapsed > 0 and days_elapsed % update_cycle == 0:
+                    planned_amt += (accumulated_profit_in_cycle * (p_ratio if accumulated_profit_in_cycle >= 0 else l_ratio)) / split_n
+                    accumulated_profit_in_cycle = 0
+
+                target_p = prev_close * (1 + bp)
                 raw_qty = min(planned_amt, cash) / (target_p * (1 + fee_rate))
-                target_qty = int(raw_qty) if raw_qty > 0 else 0
+                # 가드: 분할 전날이거나 분할 당일이면 매수 안함
+                target_qty = int(raw_qty) if (raw_qty > 0 and not is_split_tomorrow and split_ratio == 0) else 0
                 
                 actual_buy_q, planned_sell_p, moc_date = 0, 0, None
                 if curr_close <= target_p and target_qty > 0:
@@ -155,6 +160,7 @@ if run:
                             actual_buy_q, daily_fees, planned_sell_p, moc_date = target_qty, daily_fees + (curr_close * target_qty * fee_rate), slots[s]['target_p'], slots[s]['expire_d']
                             break
 
+                # [D] 자산 계산
                 eval_val = sum(s['qty'] * curr_close for s in slots if s)
                 total_asset = cash + eval_val
                 asset_history.append(total_asset); date_history.append(curr_date)
@@ -164,15 +170,14 @@ if run:
                 
                 logs.append({
                     '날짜': curr_date, '종가': round(curr_close, 2), '모드': mode, '변동률': f"{((curr_close-prev_close)/prev_close*100):+.2f}%",
-                    '매수예정액': int(round(planned_amt)), # ⭐ 반올림 유지
-                    '매입목표량': target_qty, '매수가': round(target_p, 2), # ⭐ 내림 적용
+                    '매수예정액': int(round(planned_amt)), '매입목표량': target_qty, '매수가': round(target_p, 2),
                     '매수량': actual_buy_q if actual_buy_q > 0 else "-", '매도목표가': round(planned_sell_p, 2) if actual_buy_q > 0 else "-",
                     'MOC매도일': moc_date if actual_buy_q > 0 else "-", '실제매도일': "-", '매도량': "-", '실현수익': 0.0,
-                    '당일실현': round(daily_realized_profit, 2), '수수료': round(daily_fees, 2), '예수금': int(round(cash)), '평가금': int(round(eval_val)), '총자산': int(round(total_asset)), '수익률': f"{((total_asset-capital)/capital*100):.2f}%"
+                    '당일실현': round(daily_realized_profit, 2), '수수료': round(daily_fees, 2), '예수금': int(round(cash)), '평가금': int(round(eval_val)), '총자산': int(round(total_asset)), '수익률': f" {((total_asset-capital)/capital*100):.2f}% "
                 })
                 days_elapsed += 1
 
-            # --- [4] 결과 출력 ---
+            # 결과 출력 (기존 유지)
             st.divider()
             m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("최종 총자산", f"${int(round(total_asset)):,}")
